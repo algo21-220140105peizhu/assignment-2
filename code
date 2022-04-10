@@ -1,0 +1,100 @@
+import numpy as np
+import pandas as pd
+from pylab import mpl
+mpl.rcParams['font.sans-serif']=['SimHei']
+mpl.rcParams['axes.unicode_minus']=False
+
+data=pd.read_excel('C:/Users/Administrator/Desktop/利率互换计算模型.xlsx',header=0)
+print(data)  #展示原始数据
+#即期利率的求解函数
+def spotrateDF(data):
+    t=np.array((data.end_date-data.start_date).dt.days/365)
+    DF=np.array(1/(1+data.interest/100*(data.end_date-data.start_date).dt.days/360))  #3M及以下的贴现因子
+    spot_rate=-np.log(DF)/t  #3M及以下的即期利率
+    add=np.zeros(len(t))
+    M_3=data[data.term=='3M'].index.tolist() #查询期限为3M的行序号
+    add[M_3]=t[M_3]*DF[M_3]   #从第3个月起后续需要进行剥靴处理，增加辅助列
+    i=M_3[0]+1   
+    Y_1=data[data.term=='1Y'].index.tolist()  #查询期限为1Y的行序号
+    while(i<Y_1[0]+1):   #大于3M，小于1年期及以内的贴现因子的计算
+        DF[i]=(1-data.interest[i]/100*add[i-1])/(1+data.interest[i]/100*(data.end_date[i]-data.end_date[i-1]).days/365)
+        add[i]=(data.end_date[i]-data.end_date[i-1]).days/365*DF[i]+add[i-1]
+        i=i+1
+    spot_rate=-np.log(DF)/t  #计算1年期及以内的即期利率
+    #寻找interest列的缺失值索引
+    for columname in data.columns:
+        if data[columname].count() != len(data):
+            loc = data[columname][data[columname].isnull().values==True].index.tolist()
+    c = []  #生成一个空列表，用来放新列表
+    for i in range(len(loc)-1):
+        if (loc[i+1] - loc[i]) != 1 :  #后者减前者
+            c.append(loc[i+1])          #添加元素到新列表
+    c.append(len(data.index.tolist()))   #得到需要插值的即期利率索引
+    #求取即期利率函数>1年，假设即期利率服从线性，息票剥离法
+    def spotrate(start,end):
+        import scipy.optimize as so
+        def f(y):
+            i=start+1
+            while(i<=end):
+                spot_rate[i]=spot_rate[start]+(data.end_date[i]-data.end_date[start])/(data.end_date[end]-data.end_date[start])*(y-spot_rate[start])
+                add[i]=(data.end_date[i]-data.end_date[i-1]).days/365*DF[i]+add[i-1]
+                i=i+1        
+            DF[start+1:end]=np.exp(-t[start+1:end]*spot_rate[start+1:end])
+            DF[end]=np.exp(-t[end]*y)        
+            return 100*data.interest[end]/100*add[end]+100*DF[end]-100
+        return so.fsolve(f,0.01)    
+    #调用即期利率函数
+    spot_rate[c[0]-1]=spotrate(loc[0]-1,c[0]-1)
+    i=1
+    while(i<len(c)):        
+        spot_rate[c[i]-1]=spotrate(c[i-1]-1,c[i]-1)
+        i=i+1     
+#调整交易由于是T+1，统一贴现至估值日即即期利率与贴现因子（T+0交易无需该步骤）
+    DF1=DF*DF[0]
+    DF1[0]=DF[0]
+    DF=DF1
+    t1=np.array((data.end_date-data.start_date[0]).dt.days/365)
+    i=0
+    while(i<len(t1)):
+        spot_rate[i]=-np.log(DF[i])/t1[i]
+        i=i+1          
+    return spot_rate,DF
+
+spot_rate=spotrateDF(data)[0]        #调用即期利率求解函数
+DF=spotrateDF(data)[1]
+
+def visualization(data,spot_rate,DF):
+    '''输出即期利率，贴现因子结果'''
+    i=0
+    while i<=len(spot_rate)-1:
+        print('开始日期',data.start_date[i].strftime("%Y-%m-%d"),'结束日期',data.end_date[i].strftime("%Y-%m-%d"),'期限点',              
+              data.term[i],'贴现因子',round(DF[i],6),'即期利率',round(spot_rate[i]*100,4))
+        i=i+1
+    #绘图按照计息周期插值的零息曲线和贴现因子曲线
+    import matplotlib.pyplot as plt
+    from pylab import mpl
+    mpl.rcParams['font.sans-serif']=['SimHei']
+    mpl.rcParams['axes.unicode_minus']=False
+    #零息曲线
+    plt.figure(figsize=(20,15))
+    plt.scatter(data.end_date,spot_rate*100)
+    plt.plot(data.end_date,spot_rate*100,'r',lw=2.5)
+    plt.xlabel(u'日期',fontsize=20)
+    plt.xticks(fontsize=13)
+    plt.ylabel(u'零息利率',fontsize=20)
+    plt.yticks(fontsize=20)
+    plt.grid('True')
+    plt.show()    
+    #贴现因子曲线
+    plt.figure(figsize=(20,15))
+    plt.scatter(data.end_date,DF)
+    plt.plot(data.end_date,DF,'y',lw=2.5)
+    plt.xlabel(u'日期',fontsize=20)
+    plt.xticks(fontsize=13)
+    plt.ylabel(u'贴现因子',fontsize=20)
+    plt.yticks(fontsize=20)
+    plt.grid('True')
+    plt.show()
+    return DF
+
+Visualized=visualization(data,spot_rate,DF)
